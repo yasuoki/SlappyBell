@@ -234,11 +234,23 @@ void Processor::cmdWifi(uint32_t now, const char* cmd)
     {
         if (strcmp(ssid, "off") == 0)
         {
-            WiFi.disconnect(true);
             WiFi.setAutoReconnect(false);
+            for (int i = 0; i < 5; i++)
+            {
+                while(WiFi.status() == WL_CONNECTED ){
+                    WiFi.disconnect(true);
+                    delay(800);
+                }
+            }
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                sendResponse(CD_ERROR);
+                return;
+            }
             _ssid[0] = 0;
             _password[0] = 0;
             _wifiStatus = WIFI_CLOSE;
+            WiFi.setAutoReconnect(false);
             sendResponse(CD_SUCCESS);
             return;
         }
