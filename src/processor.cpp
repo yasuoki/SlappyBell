@@ -110,40 +110,31 @@ const char * Processor::getWifiStatusMessage(wl_status_t s)
 
 void Processor::sendNotify(int code, bool hasBody)
 {
-    if (Serial)
-    {
-        const char* statusLine = getMessageFromCode(code);
-        Serial.printf(NOTIFY_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
-    }
+    const char* statusLine = getMessageFromCode(code);
+    Serial.printf(NOTIFY_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
 }
 
 void Processor::sendResponse(int code, bool hasBody)
 {
-    if (Serial)
-    {
-        const char* statusLine = getMessageFromCode(code);
-        Serial.printf(RESPONSE_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
-    }
+    const char* statusLine = getMessageFromCode(code);
+    Serial.printf(RESPONSE_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
 }
 
 void Processor::sendResponse(int code, bool hasBody, const char* format, ...)
 {
-    if (Serial)
+    if (format != nullptr)
     {
-        if (format != nullptr)
-        {
-            va_list args;
-            va_start(args, format);
-            vsnprintf(messageBuffer, MESSAGE_BUFFER_SIZE, format, args);
-            va_end(args);
-            messageBuffer[MESSAGE_BUFFER_SIZE - 1] = 0;
-        }
-        else
-        {
-            messageBuffer[0] = 0;
-        }
-        Serial.printf(RESPONSE_PREFIX " %s%s%s\n", getMessageFromCode(code), messageBuffer, hasBody ? "+" : "");
+        va_list args;
+        va_start(args, format);
+        vsnprintf(messageBuffer, MESSAGE_BUFFER_SIZE, format, args);
+        va_end(args);
+        messageBuffer[MESSAGE_BUFFER_SIZE - 1] = 0;
     }
+    else
+    {
+        messageBuffer[0] = 0;
+    }
+    Serial.printf(RESPONSE_PREFIX " %s%s%s\n", getMessageFromCode(code), messageBuffer, hasBody ? "+" : "");
 }
 
 void Processor::sendBody(const char* format, ...)
@@ -153,10 +144,7 @@ void Processor::sendBody(const char* format, ...)
     vsnprintf(messageBuffer, MESSAGE_BUFFER_SIZE, format, args);
     va_end(args);
     messageBuffer[MESSAGE_BUFFER_SIZE - 1] = 0;
-    if (Serial)
-    {
-        Serial.printf("%s\n", messageBuffer);
-    }
+    Serial.printf("%s\n", messageBuffer);
 }
 
 void Processor::init()
