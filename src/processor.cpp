@@ -232,6 +232,16 @@ void Processor::cmdWifi(uint32_t now, const char* cmd)
     cmd = Utils::parseString(cmd, passwd, sizeof(passwd));
     if (cmd == nullptr)
     {
+        if (strcmp(ssid, "off") == 0)
+        {
+            WiFi.disconnect(true);
+            WiFi.setAutoReconnect(false);
+            _ssid[0] = 0;
+            _password[0] = 0;
+            _wifiStatus = WIFI_CLOSE;
+            sendResponse(CD_SUCCESS);
+            return;
+        }
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
     }
