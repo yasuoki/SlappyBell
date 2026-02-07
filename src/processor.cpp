@@ -421,11 +421,11 @@ void Processor::cmdUpload(uint32_t now, const char* ptr)
         return;
     }
     stopAudio(_uploadFileName);
+    _fileUploadStatus = CD_SUCCESS;
     _file = LittleFS.open(_uploadFileName, "w");
     if (!_file)
     {
-        sendResponse(CD_FILE_IO_ERROR);
-        return;
+        _fileUploadStatus = CD_FILE_IO_ERROR;
     }
     _receiveFileSize = 0;
     _receiveChunkSize = 0;
@@ -456,12 +456,13 @@ size_t Processor::uploadProcess(uint32_t now, const byte* data, size_t size)
 
         if (_receiveChunkSize == sizeof(_fileBuffer))
         {
-            if (_file)
+            if (_file && _fileUploadStatus == CD_SUCCESS)
             {
                 log_d("flush chunk %u/%u", _receiveFileSize, _uploadFileSize);
                 if (_file.write(_fileBuffer, _receiveChunkSize) != _receiveChunkSize)
                 {
                     _file.close();
+                    _fileUploadStatus = CD_FILE_IO_ERROR;
                 }
             }
             _receiveChunkSize = 0;
@@ -473,16 +474,17 @@ size_t Processor::uploadProcess(uint32_t now, const byte* data, size_t size)
     {
         if (_receiveChunkSize > 0)
         {
-            if (_file)
+            if (_file && _fileUploadStatus == CD_SUCCESS)
             {
                 if (_file.write(_fileBuffer, _receiveChunkSize) != _receiveChunkSize)
                 {
                     _file.close();
+                    _fileUploadStatus = CD_FILE_IO_ERROR;
                 }
             }
         }
         bool success = false;
-        if (_file)
+        if (_file && _fileUploadStatus == CD_SUCCESS)
         {
             _file.close();
             success = true;
@@ -490,7 +492,7 @@ size_t Processor::uploadProcess(uint32_t now, const byte* data, size_t size)
         if (success)
             sendResponse(CD_SUCCESS, false, ", Upload Complete. size=%u", _receiveFileSize);
         else
-            sendResponse(CD_FILE_IO_ERROR);
+            sendResponse(_fileUploadStatus);
         _state = COMMAND_LISTEN;
     }
     return readSize - size;

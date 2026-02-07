@@ -43,6 +43,7 @@ private:
 	uint _uploadFileSize = 0;
 	uint _receiveFileSize = 0;
 	uint _receiveChunkSize = 0;
+	int _fileUploadStatus = 0;
 	File _file;
 	char _playFileName[80];
 
