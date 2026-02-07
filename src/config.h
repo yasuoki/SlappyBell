@@ -7,10 +7,14 @@
 
 #define PRODUCT_MANUFACTURER "Yonabe Factory"
 #define PRODUCT_NAME "SlappyBell"
-#define PRODUCT_VERSION "1.0.0"
+#define PRODUCT_VERSION "1.1.0"
 
+#ifndef USB_MANUFACTURER
 #define USB_MANUFACTURER PRODUCT_MANUFACTURER
+#endif
+#ifndef USB_PRODUCT
 #define USB_PRODUCT      PRODUCT_NAME
+#endif
 
 #define SLOT_COUNT		6
 

@@ -3,10 +3,12 @@
 #include <esp_wifi.h>
 
 #include "processor.h"
+#include "transport_serial.h"
 
 byte serialBuffer[RECV_BUFFER_SIZE];
 bool serialConnectStatus = false;
 Processor *processor;
+SerialTransport serialTransport();
 
 void setup() {
 	Serial.begin(115200);
