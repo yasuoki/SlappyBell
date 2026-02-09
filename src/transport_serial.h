@@ -7,14 +7,19 @@
 #include <Arduino.h>
 #include "transport.h"
 
+class Processor;
+
 class SerialTransport : public Transport {
 private:
 	Stream &stream;
 public:
-	explicit SerialTransport(Stream &stream = Serial);
+	explicit SerialTransport(Processor *processor, Stream &stream = Serial);
 	~SerialTransport() override;
-	size_t send(const uint8_t *data, size_t len) override;
+	bool init() override;
+	void start() override;
+	void stop() override;
 	size_t available() override;
+	size_t send(const uint8_t *data, size_t len) override;
 	size_t read(uint8_t *data, size_t len) override;
 };
 

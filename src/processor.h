@@ -24,7 +24,7 @@ enum WiFiStatus
 	WIFI_CONNECTED,
 	WIFI_DISCONNECTED
 };
-
+class Transport;
 class Processor {
 private:
 	static Processor *_instance;
@@ -49,6 +49,8 @@ private:
 
 	uint32_t _serialDisconnectTime = 0;
 	bool _firstConnect = true;
+
+	Transport * _currentTransport = nullptr;
 
 	void stopAudio(const char *soundName=nullptr);
 	void stopNotify(int slot);
@@ -76,18 +78,18 @@ public:
 
 	Processor();
 	static const char *getMessageFromCode(int code);
-	static void sendNotify(int code, bool hasBody = false);
-	static void sendResponse(int code, bool hasBody = false);
-	static void sendResponse(int code, bool hasBody, const char *format, ...);
-	static void sendBody(const char *format, ...);
+	void sendNotify(int code, bool hasBody = false);
+	void sendResponse(int code, bool hasBody = false);
+	void sendResponse(int code, bool hasBody, const char *format, ...);
+	void sendBody(const char *format, ...);
 	void init();
 
 	const char *WifiSSID();
 	const char *WifiPassword();
 
-	void onSerialConnect(uint32_t now);
-	void onSerialDisconnect(uint32_t now);
-	void onSerialDataArrive(uint32_t now, const byte *data, size_t size);
+	void onSerialConnect(uint32_t now, Transport *transport);
+	void onSerialDisconnect(uint32_t now, Transport *transport);
+	void onSerialDataArrive(uint32_t now, Transport *transport, const byte *data, size_t size);
 
 	void onWifiConnect(uint32_t now);
 	void onWifiDisconnect(uint32_t now, uint8_t reason);

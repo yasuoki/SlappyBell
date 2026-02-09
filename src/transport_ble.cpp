@@ -4,8 +4,10 @@
 
 #include "transport_ble.h"
 #include "NimBLEDevice.h"
+#include "processor.h"
 
-BleTransport::BleTransport() : Transport(BLE_TRANSPORT) {
+BleTransport::BleTransport(Processor *processor) : Transport(BLE_TRANSPORT,processor) {
+
 }
 
 BleTransport::~BleTransport() {
@@ -31,7 +33,17 @@ bool BleTransport::init() {
 	svc->start();
 	_adv = NimBLEDevice::getAdvertising();
 	_adv->addServiceUUID(SERVICE_UUID);
+	return true;
+}
+
+void BleTransport::start()
+{
 	_adv->start();
+}
+
+void BleTransport::stop()
+{
+	_adv->stop();
 }
 
 size_t BleTransport::send(const uint8_t *data, size_t len) {
@@ -43,28 +55,28 @@ size_t BleTransport::send(const uint8_t *data, size_t len) {
 }
 
 size_t BleTransport::available() {
-
+	return 0;
 }
 
 size_t BleTransport::read(uint8_t *data, size_t len) {
+	return 0;
 }
 
 void BleTransport::onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo &connInfo) {
 	NimBLEAttValue value = pCharacteristic->getValue();
 	size_t len = value.size();
-	const uint8_t *data = value.data();
+	if (len == 0) return;
 
-	std::string v = pCharacteristic->getValue();
-	String s(v.c_str());
-	s.trim(); // \r\n対策
-	if (s.length() == 0) return;
-	handleCommandLine(s);
+	const uint8_t *data = value.data();
+	processor->onSerialDataArrive(millis(), this, data, len);
 }
 
 void BleTransport::onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) {
 	_adv->stop();
+	processor->onSerialConnect(millis(), this);
 }
 
 void BleTransport::onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) {
+	processor->onSerialDisconnect(millis(), this);
 	_adv->start();
 }

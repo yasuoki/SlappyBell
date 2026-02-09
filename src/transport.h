@@ -11,18 +11,23 @@ enum TransportType {
 	BLE_TRANSPORT
 };
 
+class Processor;
+
 class Transport {
 protected:
 	TransportType type;
-	Transport(TransportType type) : type(type) {}
+	Processor* processor;
+	Transport(TransportType type, Processor* processor) : type(type),processor(processor) {}
 	virtual ~Transport() = default;
-
-	virtual size_t send(const uint8_t* data, size_t len) = 0;
+public:
+	virtual bool init() = 0;
+	virtual void start() = 0;
+	virtual void stop() = 0;
 	virtual size_t available() = 0;
 	virtual size_t read(uint8_t* data, size_t len) = 0;
-public:
-	size_t printf(const char * format, ...);
+	virtual size_t send(const uint8_t* data, size_t len) = 0;
 	size_t send(const char* text);
+	size_t printf(const char * format, ...);
 };
 
 #endif //SLAPPYBELL_FIRMWARE_TRANSPORT_H

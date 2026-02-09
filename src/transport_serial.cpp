@@ -4,14 +4,24 @@
 
 #include "transport_serial.h"
 
-SerialTransport::SerialTransport(Stream &stream) : Transport(SERIAL_TRANSPORT), stream(stream) {
+SerialTransport::SerialTransport(Processor* processor, Stream &stream) : Transport(SERIAL_TRANSPORT,processor), stream(stream) {
 }
 
 SerialTransport::~SerialTransport() {
 }
 
-size_t SerialTransport::send(const uint8_t *data, size_t len) {
-	return stream.write(data, len);
+bool SerialTransport::init()
+{
+	Serial.begin(115200);
+	return true;
+}
+
+void SerialTransport::start()
+{
+}
+
+void SerialTransport::stop()
+{
 }
 
 size_t SerialTransport::available() {
@@ -21,3 +31,8 @@ size_t SerialTransport::available() {
 size_t SerialTransport::read(uint8_t *data, size_t len) {
 	return stream.readBytes(data, len);
 }
+
+size_t SerialTransport::send(const uint8_t *data, size_t len) {
+	return stream.write(data, len);
+}
+

@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
+#include "transport.h"
 #include "processor.h"
 #include "led_sequencer.h"
 #include "status_code.h"
@@ -111,13 +112,13 @@ const char * Processor::getWifiStatusMessage(wl_status_t s)
 void Processor::sendNotify(int code, bool hasBody)
 {
     const char* statusLine = getMessageFromCode(code);
-    Serial.printf(NOTIFY_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
+    _currentTransport->printf(NOTIFY_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
 }
 
 void Processor::sendResponse(int code, bool hasBody)
 {
     const char* statusLine = getMessageFromCode(code);
-    Serial.printf(RESPONSE_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
+    _currentTransport->printf(RESPONSE_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
 }
 
 void Processor::sendResponse(int code, bool hasBody, const char* format, ...)
@@ -134,7 +135,7 @@ void Processor::sendResponse(int code, bool hasBody, const char* format, ...)
     {
         messageBuffer[0] = 0;
     }
-    Serial.printf(RESPONSE_PREFIX " %s%s%s\n", getMessageFromCode(code), messageBuffer, hasBody ? "+" : "");
+    _currentTransport->printf(RESPONSE_PREFIX " %s%s%s\n", getMessageFromCode(code), messageBuffer, hasBody ? "+" : "");
 }
 
 void Processor::sendBody(const char* format, ...)
@@ -144,7 +145,7 @@ void Processor::sendBody(const char* format, ...)
     vsnprintf(messageBuffer, MESSAGE_BUFFER_SIZE, format, args);
     va_end(args);
     messageBuffer[MESSAGE_BUFFER_SIZE - 1] = 0;
-    Serial.printf("%s\n", messageBuffer);
+    _currentTransport->printf("%s\n", messageBuffer);
 }
 
 void Processor::init()
@@ -598,8 +599,9 @@ void Processor::onWifiDisconnect(uint32_t now, uint8_t reason)
     }
 }
 
-void Processor::onSerialConnect(uint32_t now)
+void Processor::onSerialConnect(uint32_t now, Transport *transport)
 {
+    _currentTransport = transport;
     _serialDisconnectTime = 0;
     if (_wifiNotifyPending)
     {
@@ -615,7 +617,7 @@ void Processor::onSerialConnect(uint32_t now)
     }
 }
 
-void Processor::onSerialDisconnect(uint32_t now)
+void Processor::onSerialDisconnect(uint32_t now, Transport *transport)
 {
     _serialDisconnectTime = now;
 }
@@ -722,9 +724,9 @@ size_t Processor::commandProcess(uint32_t now, const char* data, size_t size)
     return readSize;
 }
 
-void Processor::onSerialDataArrive(uint32_t now, const byte* data, size_t size)
+void Processor::onSerialDataArrive(uint32_t now, Transport *transport, const byte* data, size_t size)
 {
-
+    _currentTransport = transport;
     if (_firstConnect)
     {
         LedSequencer::clear();
