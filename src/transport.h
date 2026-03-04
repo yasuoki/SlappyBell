@@ -20,12 +20,13 @@ protected:
 	Transport(TransportType type, Processor* processor) : type(type),processor(processor) {}
 	virtual ~Transport() = default;
 public:
+	TransportType getType() { return type; }
 	virtual bool init() = 0;
-	virtual void start() = 0;
-	virtual void stop() = 0;
+	virtual void close() = 0;
 	virtual size_t available() = 0;
 	virtual size_t read(uint8_t* data, size_t len) = 0;
 	virtual size_t send(const uint8_t* data, size_t len) = 0;
+	virtual void flush() = 0;
 	size_t send(const char* text);
 	size_t printf(const char * format, ...);
 };

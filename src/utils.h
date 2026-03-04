@@ -7,11 +7,26 @@
 
 #include <Arduino.h>
 
+typedef struct _STR_BUFFER
+{
+	char*  ptr;        // 現在位置
+	size_t remain;     // 残り容量（null含む）
+	bool   overflow;   // 切り詰め発生
+} STR_BUFFER;
+
 class Utils {
 public:
-	static char *strcat_ptr(char *buff, const char *add);
-	static char *strprt_ptr(char *buff, const char *fmt, ...);
+	static void init_buffer(STR_BUFFER *buffer, char *buff, size_t len);
+	static void empty_buffer(STR_BUFFER *buffer);
+	static bool is_empty_buffer(STR_BUFFER *buffer);
+	static char *strcat_ptr(char *buff, size_t len, const char *add);
+	static char *strprt_ptr(char *buff, size_t len, const char *fmt, ...);
+	static char *strprt_ptr(char *buff, size_t len, const char *fmt, va_list args);
+	static size_t strcat_buffer(STR_BUFFER *buff, const char *add);
+	static size_t printf_buffer(STR_BUFFER *buffer, const char *fmt, ...);
+	static size_t printf_buffer(STR_BUFFER *buffer, const char *fmt, va_list args);
 	static const char *strcmp_ptr(const char *s1, const char *s2);
+	static const char *is_symbol_ptr(const char *s1, const char *s2);
 	static const char * skipWs(const char *s);
 	static const char * nextChar(const char *s);
 	static const char * parseInt(const char*s, int *val);

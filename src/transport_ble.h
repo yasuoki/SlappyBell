@@ -17,24 +17,35 @@ class Processor;
 
 class BleTransport : public Transport, NimBLECharacteristicCallbacks, NimBLEServerCallbacks  {
 private:
-	NimBLECharacteristic* _ctrlTx = nullptr;
-	NimBLECharacteristic* _ctrlRx = nullptr;
-	NimBLEAdvertising* _adv = nullptr;
+	char _deviceName[32];
+	uint _mtuSize;
+	NimBLEServer* _pServer;
+	NimBLECharacteristic* _ctrlTx;
+	NimBLECharacteristic* _ctrlRx;
+	uint16_t _connHandle;
+	volatile bool _indicateReady;
+
+	bool (*_connectCallback)(Transport* transport);
+	void (*_disconnectCallback)(Transport* transport);
 
 	void onWrite(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override;
 	void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override;
 	void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo, int reason) override;
-
+	void onStatus(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, int code) override;
+	bool waitSendingComplete();
 public:
 	explicit BleTransport(Processor *processor);
 	~BleTransport() override;
 	bool init() override;
-	void start() override;
-	void stop() override;
+	void close() override;
 	size_t available() override;
 	size_t read(uint8_t *data, size_t len) override;
 	size_t send(const uint8_t *data, size_t len) override;
-
+	void flush() override;
+	void startAdv();
+	void stopAvd();
+	void setConnectCallback(bool (*cb)(Transport* transport));
+	void setDisconnectCallback(void (*cb)(Transport* transport));
 };
 
 

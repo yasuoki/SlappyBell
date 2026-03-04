@@ -11,15 +11,14 @@ class Processor;
 
 class SerialTransport : public Transport {
 private:
-	Stream &stream;
 public:
-	explicit SerialTransport(Processor *processor, Stream &stream = Serial);
+	explicit SerialTransport(Processor *processor);
 	~SerialTransport() override;
 	bool init() override;
-	void start() override;
-	void stop() override;
+	void close() override;
 	size_t available() override;
 	size_t send(const uint8_t *data, size_t len) override;
+	void flush() override;
 	size_t read(uint8_t *data, size_t len) override;
 };
 

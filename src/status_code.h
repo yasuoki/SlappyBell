@@ -26,6 +26,10 @@
 #define RC_FILE_NOT_FOUND			"22 File not found"
 #define CD_TOO_LONG_COMMAND			 23
 #define RC_TOO_LONG_COMMAND			"23 Too long command"
+#define CD_NEED_PARAMETER			 24
+#define RC_NEED_PARAMETER			"24 Need command parameter"
+#define CD_BAD_PARAMETER			 25
+#define RC_BAD_PARAMETER			"25 Bad command parameter"
 #define CD_STORAGE_FULL				 30
 #define RC_STORAGE_FULL				"30 Storage full"
 #define CD_FILE_IO_ERROR			 31
@@ -42,6 +46,10 @@
 #define RC_WIFI_AUTH_FAIL		    "52 Wi-Fi authentication failed"
 #define CD_WIFI_DISCONNECTED		 53
 #define RC_WIFI_DISCONNECTED		"53 Wi-Fi disconnected"
+#define CD_TIMEOUT          		 54
+#define RC_TIMEOUT		            "54 Timeout error"
+#define CD_OVERFLOW					 55
+#define RC_OVERFLOW		            "55 Receive buffer overflow"
 #define CD_ERROR					 90
 #define RC_ERROR					"90 Error"
 

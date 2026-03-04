@@ -22,6 +22,14 @@ LedSequencer::LedSequencer() {
 	_r = 0;
 	_g = 0;
 	_b = 0;
+
+	LED_SEQUENCE *p = &_sequence[0];
+	for (int i = 0; i < MAX_LED_SEQUENCE_LENGTH; i++)
+	{
+		p->R = 0; p->G = 0; p->B = 0;
+		p->time = 0;
+		p->deltaR = 0; p->deltaG = 0; p->deltaB = 0;
+	}
 }
 
 const char *LedSequencer::_parseColorSegment(const char *ptr, LED_SEQUENCE *seg) {

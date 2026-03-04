@@ -14,7 +14,6 @@
 #include "status_code.h"
 #include "utils.h"
 
-char messageBuffer[MESSAGE_BUFFER_SIZE];
 Audio audio;
 
 enum CommandId
@@ -33,10 +32,33 @@ Processor* Processor::_instance = nullptr;
 
 Processor::Processor()
 {
-    _ssid[0] = 0;
-    _password[0] = 0;
-    _commandBufferSize = 0;
     _instance = this;
+    _cpuClockHigh = true;
+    _receiveBuffer[0] = '\0';
+    _receiveBufferReadPtr = _receiveBuffer;
+    _receiveBufferWritePtr = _receiveBuffer;
+    _messageBuffer[0] = '\0';
+    _messageBufferRef.overflow = false;
+    _messageBufferRef.ptr = nullptr;
+    _messageBufferRef.remain = 0;
+    _state = COMMAND_LISTEN;
+
+    _wifiStatus = WIFI_CLOSE;
+    _wifiDisconnectReason = 0;
+    _wifiNotifyPending = false;
+    _lastWifiConnectTime = 0;
+
+    _uploadFileSize = 0;
+    _receiveFileSize = 0;
+    _fileUploadStatus = 0;
+    _lastUploadTime = 0;
+    _lastAvailable = 0;
+
+    _playFileName[0] = 0;
+    _serialDisconnectTime = 0;
+    _firstConnect = true;
+
+    _currentTransport = nullptr;
 }
 
 const char* Processor::getMessageFromCode(int code)
@@ -63,6 +85,10 @@ const char* Processor::getMessageFromCode(int code)
         return RC_FILE_NOT_FOUND;
     case CD_TOO_LONG_COMMAND:
         return RC_TOO_LONG_COMMAND;
+    case CD_NEED_PARAMETER:
+        return RC_NEED_PARAMETER;
+    case CD_BAD_PARAMETER:
+        return RC_BAD_PARAMETER;
     case CD_STORAGE_FULL:
         return RC_STORAGE_FULL;
     case CD_FILE_IO_ERROR:
@@ -79,14 +105,18 @@ const char* Processor::getMessageFromCode(int code)
         return RC_WIFI_AUTH_FAIL;
     case CD_WIFI_DISCONNECTED:
         return RC_WIFI_DISCONNECTED;
+    case CD_TIMEOUT:
+        return RC_TIMEOUT;
+    case CD_OVERFLOW:
+        return RC_OVERFLOW;
     default:
         return RC_ERROR;
     }
 }
 
-const char * Processor::getWifiStatusMessage(wl_status_t s)
+const char* Processor::getWifiStatusMessage(wl_status_t s)
 {
-    switch(s)
+    switch (s)
     {
     case WL_NO_SHIELD:
         return "Disabled";
@@ -112,45 +142,98 @@ const char * Processor::getWifiStatusMessage(wl_status_t s)
 void Processor::sendNotify(int code, bool hasBody)
 {
     const char* statusLine = getMessageFromCode(code);
-    _currentTransport->printf(NOTIFY_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
+    Utils::init_buffer(&_messageBufferRef, _messageBuffer, sizeof(_messageBuffer));
+    if (hasBody)
+    {
+        Utils::printf_buffer(&_messageBufferRef, NOTIFY_PREFIX " %s+\n", statusLine);
+    }
+    else
+    {
+        if (_currentTransport == nullptr)
+            return;
+        Utils::printf_buffer(&_messageBufferRef, NOTIFY_PREFIX " %s\n", statusLine);
+        _currentTransport->send(_messageBuffer);
+    }
 }
 
 void Processor::sendResponse(int code, bool hasBody)
 {
     const char* statusLine = getMessageFromCode(code);
-    _currentTransport->printf(RESPONSE_PREFIX " %s%s\n", statusLine, hasBody ? "+" : "");
+    Utils::init_buffer(&_messageBufferRef, _messageBuffer, sizeof(_messageBuffer));
+    if (hasBody)
+    {
+        Utils::printf_buffer(&_messageBufferRef, RESPONSE_PREFIX " %s+\n", statusLine);
+    }
+    else
+    {
+        if (_currentTransport == nullptr)
+            return;
+        Utils::printf_buffer(&_messageBufferRef, RESPONSE_PREFIX " %s\n", statusLine);
+        _currentTransport->send(_messageBuffer);
+    }
 }
 
 void Processor::sendResponse(int code, bool hasBody, const char* format, ...)
 {
+    Utils::init_buffer(&_messageBufferRef, _messageBuffer, sizeof(_messageBuffer));
+    Utils::printf_buffer(&_messageBufferRef, RESPONSE_PREFIX " %s", getMessageFromCode(code));
     if (format != nullptr)
     {
         va_list args;
         va_start(args, format);
-        vsnprintf(messageBuffer, MESSAGE_BUFFER_SIZE, format, args);
+        Utils::printf_buffer(&_messageBufferRef, format, args);
         va_end(args);
-        messageBuffer[MESSAGE_BUFFER_SIZE - 1] = 0;
+    }
+    if (hasBody)
+    {
+        Utils::strcat_buffer(&_messageBufferRef, "+\n");
     }
     else
     {
-        messageBuffer[0] = 0;
+        if (_currentTransport == nullptr)
+            return;
+        Utils::strcat_buffer(&_messageBufferRef, "\n");
+        _currentTransport->send(_messageBuffer);
     }
-    _currentTransport->printf(RESPONSE_PREFIX " %s%s%s\n", getMessageFromCode(code), messageBuffer, hasBody ? "+" : "");
 }
 
 void Processor::sendBody(const char* format, ...)
 {
     va_list args;
     va_start(args, format);
-    vsnprintf(messageBuffer, MESSAGE_BUFFER_SIZE, format, args);
+    Utils::printf_buffer(&_messageBufferRef, format, args);
     va_end(args);
-    messageBuffer[MESSAGE_BUFFER_SIZE - 1] = 0;
-    _currentTransport->printf("%s\n", messageBuffer);
+    Utils::strcat_buffer(&_messageBufferRef, "\n");
+}
+
+void Processor::sendEnd()
+{
+    if (_currentTransport == nullptr)
+        return;
+    Utils::strcat_buffer(&_messageBufferRef, "\n");
+    _currentTransport->send(_messageBuffer);
+}
+
+void Processor::flushSendBuffer()
+{
+    if (_currentTransport != nullptr)
+    {
+        _currentTransport->send(_messageBuffer);
+    }
+    Utils::init_buffer(&_messageBufferRef, _messageBuffer, sizeof(_messageBuffer));
+}
+
+void Processor::sendMessage(const char* message)
+{
+    if (_currentTransport == nullptr)
+        return;
+    _currentTransport->send(message);
 }
 
 void Processor::init()
 {
     setCpuFrequencyMhz(160);
+    _cpuClockHigh = false;
     if (!LittleFS.begin())
     {
         LittleFS.format();
@@ -159,22 +242,8 @@ void Processor::init()
     digitalWrite(PIN_SD_MODE, HIGH);
     audio.setPinout(PIN_I2S_BCLK, PIN_I2S_LRC, PIN_I2S_DOUT);
     audio.setVolume(21); // 0...21
-
+    WiFi.onEvent(onWiFiEvent);
     LedSequencer::init();
-}
-
-const char* Processor::WifiSSID()
-{
-    if (_ssid[0] != 0 && _password[0] != 0)
-        return _ssid;
-    return nullptr;
-}
-
-const char* Processor::WifiPassword()
-{
-    if (_ssid[0] != 0 && _password[0] != 0)
-        return _password;
-    return nullptr;
 }
 
 void Processor::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info)
@@ -182,35 +251,85 @@ void Processor::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info)
     switch (event)
     {
     case SYSTEM_EVENT_STA_CONNECTED:
-        _instance->onWifiConnect(micros());
+        _instance->onWifiConnect(millis());
         break;
 
     case SYSTEM_EVENT_STA_DISCONNECTED:
-        _instance->onWifiDisconnect(micros(), info.wifi_sta_disconnected.reason);
+        _instance->onWifiDisconnect(millis(), info.wifi_sta_disconnected.reason);
         break;
     }
+}
+
+void Processor::wifiConnect(const char* ssid, const char* passwd)
+{
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(ssid, passwd);
+    _wifiStatus = WIFI_CONNECTING;
+    _lastWifiConnectTime = millis();
+}
+
+void Processor::wifiDisconnect()
+{
+    WiFi.setAutoReconnect(false);
+    for (int i = 0; i < 5; i++)
+    {
+        while (WiFi.status() == WL_CONNECTED)
+        {
+            WiFi.disconnect();
+            vTaskDelay(100);
+        }
+    }
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        sendResponse(CD_ERROR);
+        return;
+    }
+    _wifiStatus = WIFI_CLOSE;
+    WiFi.setAutoReconnect(false);
 }
 
 void Processor::stopAudio(const char* soundName)
 {
-    if (soundName != nullptr)
-    {
-        if (strcmp(soundName, _playFileName) == 0)
-        {
-            audio.stopSong();
-            _playFileName[0] = 0;
-        }
-    }
-    else
-    {
-        audio.stopSong();
-        _playFileName[0] = 0;
-    }
+    if (soundName != nullptr && strcmp(soundName, _playFileName) != 0)
+        return;
+    audio.stopSong();
+    _playFileName[0] = 0;
 }
 
 void Processor::cmdAbout(uint32_t now)
 {
-    sendBody("Yonabe Factory / " PRODUCT_NAME " / " PRODUCT_VERSION);
+    sendMessage("Yonabe Factory / " PRODUCT_NAME " / " PRODUCT_VERSION "\n");
+}
+
+void Processor::cmdPing(uint32_t now, const char* cmd)
+{
+    if (*cmd != '\0')
+    {
+        sendResponse(CD_BAD_PARAMETER);
+        return;
+    }
+    sendResponse(CD_SUCCESS);
+}
+
+void Processor::cmdBye(uint32_t now, const char* ptr)
+{
+    if (*ptr != '\0')
+    {
+        sendResponse(CD_BAD_PARAMETER);
+    } else
+    {
+        sendResponse(CD_SUCCESS);
+    }
+    if (_currentTransport != nullptr)
+    {
+        _currentTransport->flush();
+        _currentTransport->close();
+        onTransportDisconnect(now, _currentTransport);
+    }
+    else
+    {
+        cancelProcess();
+    }
 }
 
 void Processor::cmdWifi(uint32_t now, const char* cmd)
@@ -219,7 +338,7 @@ void Processor::cmdWifi(uint32_t now, const char* cmd)
     cmd = Utils::skipWs(cmd);
     if (cmd == nullptr || *cmd == '\0')
     {
-        const char *st = getWifiStatusMessage(WiFi.status());
+        const char* st = getWifiStatusMessage(WiFi.status());
         sendResponse(CD_SUCCESS, false, ", %s", st);
         return;
     }
@@ -235,47 +354,29 @@ void Processor::cmdWifi(uint32_t now, const char* cmd)
     {
         if (strcmp(ssid, "off") == 0)
         {
-            WiFi.setAutoReconnect(false);
-            for (int i = 0; i < 5; i++)
-            {
-                while(WiFi.status() == WL_CONNECTED ){
-                    WiFi.disconnect(true);
-                    delay(800);
-                }
-            }
-            if (WiFi.status() == WL_CONNECTED)
-            {
-                sendResponse(CD_ERROR);
-                return;
-            }
-            _ssid[0] = 0;
-            _password[0] = 0;
-            _wifiStatus = WIFI_CLOSE;
-            WiFi.setAutoReconnect(false);
+            wifiDisconnect();
             sendResponse(CD_SUCCESS);
             return;
         }
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
     }
-    if (_ssid[0] == 0)
+    if (_wifiStatus == WIFI_CONNECTED)
     {
-        WiFi.onEvent(onWiFiEvent);
+        wifiDisconnect();
     }
-    strcpy(_ssid, ssid);
-    strcpy(_password, passwd);
-    _wifiStatus = WIFI_CONNECTING;
-    WiFi.disconnect(true);
-    WiFi.setAutoReconnect(true);
-    wl_status_t st = WiFi.begin(ssid, passwd);
-    if (st != WL_CONNECTED)
-        log_d("cmdWifi WiFi.begin(%s,%s)=%d", ssid, passwd, st);
+    wifiConnect(ssid, passwd);
     sendResponse(CD_SUCCESS);
 }
 
 void Processor::cmdLedOn(uint32_t now, const char* cmd)
 {
     // led-on slot pattern
+    if (*cmd != ' ')
+    {
+        sendResponse(CD_NEED_PARAMETER);
+        return;
+    }
     int slot;
     cmd = Utils::parseInt(cmd, &slot);
     if (!cmd)
@@ -288,7 +389,7 @@ void Processor::cmdLedOn(uint32_t now, const char* cmd)
         sendResponse(CD_SLOT_ERROR);
         return;
     }
-    slot = SLOT_COUNT - slot -1;
+    slot = SLOT_COUNT - slot - 1;
     if (!LedSequencer::parse(slot, cmd))
     {
         sendResponse(CD_BAD_COMMAND_FORMAT);
@@ -300,6 +401,11 @@ void Processor::cmdLedOn(uint32_t now, const char* cmd)
 void Processor::cmdLedOff(uint32_t now, const char* cmd)
 {
     // led-off slot
+    if (*cmd != ' ')
+    {
+        sendResponse(CD_NEED_PARAMETER);
+        return;
+    }
     int slot;
     cmd = Utils::parseInt(cmd, &slot);
     if (!cmd)
@@ -307,18 +413,24 @@ void Processor::cmdLedOff(uint32_t now, const char* cmd)
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
     }
-    slot = SLOT_COUNT - slot -1;
+    slot = SLOT_COUNT - slot - 1;
     LedSequencer::clear(slot);
     sendResponse(CD_SUCCESS);
 }
 
-void Processor::cmdPlay(uint32_t now, const char* ptr)
+void Processor::cmdPlay(uint32_t now, const char* cmd)
 {
     // play "mp3-file"
+    if (*cmd != ' ')
+    {
+        sendResponse(CD_NEED_PARAMETER);
+        return;
+    }
     stopAudio();
     _playFileName[0] = 0;
-    ptr = Utils::parseString(ptr, _playFileName, sizeof(_playFileName));
-    if (!ptr)
+
+    cmd = Utils::parseString(cmd, _playFileName, sizeof(_playFileName));
+    if (!cmd)
     {
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
@@ -366,18 +478,28 @@ void Processor::cmdPlay(uint32_t now, const char* ptr)
     sendResponse(CD_SUCCESS);
 }
 
-void Processor::cmdStop(uint32_t now)
+void Processor::cmdStop(uint32_t now, const char* cmd)
 {
+    if (*cmd != '\0')
+    {
+        sendResponse(CD_BAD_PARAMETER);
+        return;
+    }
     stopAudio();
     sendResponse(CD_SUCCESS);
 }
 
-void Processor::cmdVolume(uint32_t now, const char* ptr)
+void Processor::cmdVolume(uint32_t now, const char* cmd)
 {
     // volume 100
+    if (*cmd != ' ')
+    {
+        sendResponse(CD_NEED_PARAMETER);
+        return;
+    }
     uint volume;
-    ptr = Utils::parseUInt(ptr, &volume);
-    if (!ptr)
+    cmd = Utils::parseUInt(cmd, &volume);
+    if (!cmd)
     {
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
@@ -394,135 +516,95 @@ void Processor::cmdVolume(uint32_t now, const char* ptr)
     sendResponse(CD_SUCCESS);
 }
 
-void Processor::cmdUpload(uint32_t now, const char* ptr)
+void Processor::cmdUpload(uint32_t now, const char* cmd)
 {
     // upload "filename" fileSize
-    ptr = Utils::parseString(ptr, _uploadFileName, sizeof(_uploadFileName));
-    if (!ptr)
+    char fileName[32];
+    if (*cmd != ' ')
+    {
+        sendResponse(CD_NEED_PARAMETER);
+        return;
+    }
+    cmd = Utils::parseString(cmd, fileName, sizeof(fileName));
+    if (!cmd)
     {
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
     }
-    ptr = Utils::parseUInt(ptr, &_uploadFileSize);
-    if (!ptr)
+    cmd = Utils::parseUInt(cmd, &_uploadFileSize);
+    if (!cmd)
     {
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
     }
-    if (_uploadFileName[0] != '/')
+    if (fileName[0] != '/')
     {
         char t[32];
-        strcpy(t, _uploadFileName);
-        strcpy(&_uploadFileName[1], t);
-        _uploadFileName[0] = '/';
+        strcpy(t, fileName);
+        strcpy(&fileName[1], t);
+        fileName[0] = '/';
     }
-    if (strlen(_uploadFileName) == 0 || _uploadFileSize == 0)
+    if (strlen(fileName) == 0 || _uploadFileSize == 0)
     {
         sendResponse(CD_COMMAND_ERROR);
         return;
     }
-    stopAudio(_uploadFileName);
+    size_t totalBytes = LittleFS.totalBytes();
+    size_t usedBytes = LittleFS.usedBytes();
+    size_t freeBytes = totalBytes - usedBytes;
+    if (freeBytes < _uploadFileSize)
+    {
+        sendResponse(CD_STORAGE_FULL);
+        return;
+    }
+
+    stopAudio(fileName);
     _fileUploadStatus = CD_SUCCESS;
-    _file = LittleFS.open(_uploadFileName, "w");
-    if (!_file)
+    _uploadFile = LittleFS.open(fileName, "w");
+    if (!_uploadFile)
     {
         _fileUploadStatus = CD_FILE_IO_ERROR;
+        sendResponse(CD_FILE_IO_ERROR);
+        return;
     }
+
     _receiveFileSize = 0;
-    _receiveChunkSize = 0;
     _state = FILE_UPLOAD;
+    _lastUploadTime = 0;
+    _lastAvailable = 0;
+    sendResponse(CD_SUCCESS, false, ", Upload Start. size=%u", _uploadFileSize);
 }
 
-size_t Processor::uploadProcess(uint32_t now, const byte* data, size_t size)
+void Processor::cmdRemove(uint32_t now, const char* cmd)
 {
-    log_d("receive chunk %u/%u", _receiveFileSize, _uploadFileSize);
-    size_t remain = _uploadFileSize - _receiveFileSize;
-    size_t readSize = size;
-    while (remain > 0 && size > 0)
+    // remove "fileName"
+    char fileName[32];
+    if (*cmd != ' ')
     {
-        size_t bufferSpace = sizeof(_fileBuffer) - _receiveChunkSize;
-        size_t writeSize = remain < bufferSpace ? remain : bufferSpace;
-        if (writeSize > size)
-            writeSize = size;
-
-        size_t dataSize = 0;
-        byte* dst = &_fileBuffer[_receiveChunkSize];
-        while (writeSize > dataSize)
-        {
-            *dst++ = *data++;
-            dataSize++;
-        }
-        _receiveChunkSize += dataSize;
-        _receiveFileSize += dataSize;
-
-        if (_receiveChunkSize == sizeof(_fileBuffer))
-        {
-            if (_file && _fileUploadStatus == CD_SUCCESS)
-            {
-                log_d("flush chunk %u/%u", _receiveFileSize, _uploadFileSize);
-                if (_file.write(_fileBuffer, _receiveChunkSize) != _receiveChunkSize)
-                {
-                    _file.close();
-                    _fileUploadStatus = CD_FILE_IO_ERROR;
-                }
-            }
-            _receiveChunkSize = 0;
-        }
-        remain -= dataSize;
-        size -= dataSize;
+        sendResponse(CD_NEED_PARAMETER);
+        return;
     }
-    if (remain == 0)
-    {
-        if (_receiveChunkSize > 0)
-        {
-            if (_file && _fileUploadStatus == CD_SUCCESS)
-            {
-                if (_file.write(_fileBuffer, _receiveChunkSize) != _receiveChunkSize)
-                {
-                    _file.close();
-                    _fileUploadStatus = CD_FILE_IO_ERROR;
-                }
-            }
-        }
-        bool success = false;
-        if (_file && _fileUploadStatus == CD_SUCCESS)
-        {
-            _file.close();
-            success = true;
-        }
-        if (success)
-            sendResponse(CD_SUCCESS, false, ", Upload Complete. size=%u", _receiveFileSize);
-        else
-            sendResponse(_fileUploadStatus);
-        _state = COMMAND_LISTEN;
-    }
-    return readSize - size;
-}
-
-void Processor::cmdRemove(uint32_t now, const char* ptr)
-{
-    // R "fileName"
-    ptr = Utils::parseString(ptr, _uploadFileName, sizeof(_uploadFileName));
-    if (!ptr)
+    cmd = Utils::parseString(cmd, fileName, sizeof(fileName));
+    if (!cmd)
     {
         sendResponse(CD_BAD_COMMAND_FORMAT);
         return;
     }
-    if (_uploadFileName[0] != '/')
+    if (fileName[0] != '/')
     {
         char t[32];
-        strcpy(t, _uploadFileName);
-        strcpy(&_uploadFileName[1], t);
-        _uploadFileName[0] = '/';
+        strcpy(t, fileName);
+        strcpy(&fileName[1], t);
+        fileName[0] = '/';
     }
 
-    if (!LittleFS.exists(_uploadFileName))
+    if (!LittleFS.exists(fileName))
     {
         sendResponse(CD_FILE_NOT_FOUND);
         return;
     }
-    stopAudio(_uploadFileName);
-    if (!LittleFS.remove(_uploadFileName))
+    stopAudio(fileName);
+    if (!LittleFS.remove(fileName))
     {
         sendResponse(CD_FILE_IO_ERROR);
         return;
@@ -530,23 +612,31 @@ void Processor::cmdRemove(uint32_t now, const char* ptr)
     sendResponse(CD_SUCCESS);
 }
 
-void Processor::cmdList(uint32_t now)
+void Processor::cmdList(uint32_t now, const char* cmd)
 {
-    // L
+    // List
+    if (*cmd != '\0')
+    {
+        sendResponse(CD_BAD_PARAMETER);
+        return;
+    }
     size_t totalBytes = LittleFS.totalBytes();
     size_t usedBytes = LittleFS.usedBytes();
     File root = LittleFS.open("/");
     File file = root.openNextFile();
     sendResponse(CD_SUCCESS, true);
     sendBody("Storage Usage: %lu/%lu\nFiles:", (ulong)usedBytes, (ulong)totalBytes);
-
     while (file)
     {
         const char* name = file.name();
+        if (strlen(name) + 10 > _messageBufferRef.remain)
+        {
+            flushSendBuffer();
+        }
         sendBody("%s %lu", name, (ulong)file.size());
         file = root.openNextFile();
     }
-    sendBody("");
+    sendEnd();
 }
 
 void Processor::onWifiConnect(uint32_t now)
@@ -558,15 +648,7 @@ void Processor::onWifiConnect(uint32_t now)
             esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
         }
         _wifiStatus = WIFI_CONNECTED;
-        if (_serialDisconnectTime == 0)
-        {
-            sendNotify(CD_WIFI_CONNECTED);
-            _wifiNotifyPending = false;
-        }
-        else
-        {
-            _wifiNotifyPending = true;
-        }
+        _wifiNotifyPending = true;
     }
 }
 
@@ -575,184 +657,354 @@ void Processor::onWifiDisconnect(uint32_t now, uint8_t reason)
     if (_wifiStatus != WIFI_DISCONNECTED)
     {
         _wifiStatus = WIFI_DISCONNECTED;
-        if (_serialDisconnectTime == 0)
-        {
-            switch (reason)
-            {
-            case WIFI_REASON_AUTH_EXPIRE:
-            case WIFI_REASON_ASSOC_EXPIRE:
-            case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
-                sendNotify(CD_WIFI_AUTH_FAIL);
-                break;
-            case WIFI_REASON_NO_AP_FOUND:
-                sendNotify(CD_WIFI_SSID_NOT_FOUND);
-                break;
-            default:
-                sendNotify(CD_WIFI_DISCONNECTED);
-            }
-            _wifiNotifyPending = false;
-        }
-        else
-        {
-            _wifiNotifyPending = true;
-        }
+        _wifiDisconnectReason = reason;
+        _wifiNotifyPending = true;
     }
 }
 
-void Processor::onSerialConnect(uint32_t now, Transport *transport)
+bool Processor::onTransportConnect(uint32_t now, Transport* transport)
 {
-    _currentTransport = transport;
     _serialDisconnectTime = 0;
-    if (_wifiNotifyPending)
+    if (_currentTransport == transport)
+        return true;
+    if (_currentTransport != nullptr)
     {
-        if (_wifiStatus == WIFI_CONNECTED)
+        if (_currentTransport->getType() == TransportType::SERIAL_TRANSPORT)
         {
-            sendNotify(CD_WIFI_CONNECTED);
+            return false;
         }
-        else
-        {
-            sendNotify(CD_WIFI_DISCONNECTED);
-        }
-        _wifiNotifyPending = false;
+        cancelProcess();
+        _currentTransport->close();
+        _currentTransport = nullptr;
     }
-}
 
-void Processor::onSerialDisconnect(uint32_t now, Transport *transport)
-{
-    _serialDisconnectTime = now;
-}
-
-void Processor::parseExecCommand(uint32_t now)
-{
-    log_d("parseExecCommand command=<%s>", _commandBuffer);
-    const char* cmp = Utils::skipWs(_commandBuffer);
-    if (cmp == nullptr || *cmp == '\0')
-    {
-        cmdAbout(now);
-        return;
-    }
-    const char* ptr = Utils::strcmp_ptr("wifi", cmp);
-    if (ptr)
-    {
-        cmdWifi(now, ptr);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("led-on", cmp);
-    if (ptr && *ptr == ' ')
-    {
-        cmdLedOn(now, ptr);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("led-off", cmp);
-    if (ptr && *ptr == ' ')
-    {
-        cmdLedOff(now, ptr);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("play", cmp);
-    if (ptr && *ptr == ' ')
-    {
-        cmdPlay(now, ptr);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("stop", cmp);
-    if (ptr && *ptr == '\0')
-    {
-        cmdStop(now);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("volume", cmp);
-    if (ptr && *ptr == ' ')
-    {
-        cmdVolume(now, ptr);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("upload", cmp);
-    if (ptr && *ptr == ' ')
-    {
-        cmdUpload(now, ptr);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("remove", cmp);
-    if (ptr && *ptr == ' ')
-    {
-        cmdRemove(now, ptr);
-        return;
-    }
-    ptr = Utils::strcmp_ptr("list", cmp);
-    if (ptr && *ptr == '\0')
-    {
-        cmdList(now);
-        return;
-    }
-    sendResponse(CD_UNKNOWN_COMMAND);
-}
-
-size_t Processor::commandProcess(uint32_t now, const char* data, size_t size)
-{
-    size_t readSize = 0;
-    char* ptr = &_commandBuffer[_commandBufferSize];
-    while (readSize < size)
-    {
-        if (_commandBufferSize + 1 > COMMAND_BUFFER_SIZE)
-        {
-            _commandBufferSize = 0;
-            _state = RESYNC;
-            break;
-        }
-        readSize++;
-        if (*data == '\r' || *data == '\n')
-        {
-            if (*data == '\r' && *(data + 1) == '\n')
-            {
-                data++;
-                readSize++;
-            }
-            *ptr = 0;
-            data++;
-            parseExecCommand(now);
-            _commandBufferSize = 0;
-            if (_state != COMMAND_LISTEN)
-                break;
-        }
-        else
-        {
-            *ptr++ = *data++;
-            _commandBufferSize++;
-        }
-    }
-    return readSize;
-}
-
-void Processor::onSerialDataArrive(uint32_t now, Transport *transport, const byte* data, size_t size)
-{
     _currentTransport = transport;
     if (_firstConnect)
     {
         LedSequencer::clear();
         _firstConnect = false;
     }
+    return true;
+}
 
-
-    while (size > 0)
+void Processor::onTransportDisconnect(uint32_t now, Transport* transport)
+{
+    if (_currentTransport == transport)
     {
-        if (_state == RESYNC)
+        _currentTransport = nullptr;
+        cancelProcess();
+    }
+}
+
+void Processor::onSerialConnect(uint32_t now, Transport* transport)
+{
+    if (_serialDisconnectTime != 0)
+    {
+        _serialDisconnectTime = 0;
+        return;
+    }
+    onTransportConnect(now, transport);
+}
+
+void Processor::onSerialDisconnect(uint32_t now, Transport* transport)
+{
+    _serialDisconnectTime = now;
+}
+
+void Processor::commandProcess(uint32_t now, const char* line)
+{
+    const char* cmp = Utils::skipWs(line);
+    if (cmp == nullptr || *cmp == '\0')
+    {
+        cmdAbout(now);
+        return;
+    }
+    const char* ptr = Utils::is_symbol_ptr("ping", cmp);
+    if (ptr)
+    {
+        cmdPing(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("bye", cmp);
+    if (ptr)
+    {
+        cmdBye(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("wifi", cmp);
+    if (ptr)
+    {
+        cmdWifi(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("led-on", cmp);
+    if (ptr)
+    {
+        cmdLedOn(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("led-off", cmp);
+    if (ptr)
+    {
+        cmdLedOff(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("play", cmp);
+    if (ptr)
+    {
+        cmdPlay(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("stop", cmp);
+    if (ptr)
+    {
+        cmdStop(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("volume", cmp);
+    if (ptr)
+    {
+        cmdVolume(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("upload", cmp);
+    if (ptr)
+    {
+        cmdUpload(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("remove", cmp);
+    if (ptr)
+    {
+        cmdRemove(now, ptr);
+        return;
+    }
+    ptr = Utils::is_symbol_ptr("list", cmp);
+    if (ptr)
+    {
+        cmdList(now, ptr);
+        return;
+    }
+    sendResponse(CD_UNKNOWN_COMMAND);
+}
+
+size_t Processor::uploadProcess(uint32_t now)
+{
+    size_t remain = _uploadFileSize - _receiveFileSize;
+    size_t available = receiveBufferAvailable();
+    size_t readSize;
+    if (available == 0)
+        return 0;
+
+    if (_lastAvailable == available)
+    {
+        return 0;
+    }
+    _lastAvailable = available;
+    if (available < remain)
+    {
+        if (available < RECEIVE_BUFFER_SIZE)
         {
-            size--;
-            if (*data++ == '\n')
-            {
-                _state = COMMAND_LISTEN;
-            }
+            return 0;
         }
-        else if (_state == COMMAND_LISTEN)
+        readSize = RECEIVE_BUFFER_SIZE;
+    }
+    else
+    {
+        readSize = remain;
+    }
+    _receiveFileSize += readSize;
+    const byte* buffer = readReceiveBuffer(readSize);
+    if (buffer == nullptr)
+    {
+        _uploadFile.close();
+        _fileUploadStatus = CD_ERROR;
+        return 0;
+    }
+    if (_uploadFile && _fileUploadStatus == CD_SUCCESS)
+    {
+        if (_uploadFile.write(buffer, readSize) != readSize)
         {
-            size_t readSize = commandProcess(now, (const char*)data, size);
-            size -= readSize;
+            _uploadFile.close();
+            _fileUploadStatus = CD_FILE_IO_ERROR;
+        }
+    }
+    if (_receiveFileSize == _uploadFileSize)
+    {
+        bool success = false;
+        if (_uploadFile && _fileUploadStatus == CD_SUCCESS)
+        {
+            _uploadFile.close();
+            success = true;
+        }
+        if (success)
+            sendResponse(CD_SUCCESS, false, ", Upload Complete. size=%u", _receiveFileSize);
+        else
+            sendResponse(_fileUploadStatus);
+        _state = COMMAND_LISTEN;
+        _lastUploadTime = 0;
+    }
+    return readSize;
+}
+
+size_t Processor::writeReceiveBuffer(const byte* data, size_t size)
+{
+    byte* ptr = _receiveBufferWritePtr;
+    size_t remain = sizeof(_receiveBuffer) - (_receiveBufferWritePtr - _receiveBufferReadPtr);
+    size_t writeSize = remain < size ? remain : size;
+    memcpy(ptr, data, writeSize);
+    _receiveBufferWritePtr += writeSize;
+    if (writeSize < size)
+    {
+        sendNotify(CD_OVERFLOW);
+    }
+    return writeSize;
+}
+
+const char* Processor::readLineReceiveBuffer()
+{
+    byte* line = _receiveBufferReadPtr;
+    byte* ptr = _receiveBufferReadPtr;
+    while (ptr != _receiveBufferWritePtr)
+    {
+        char c = *(char*)ptr;
+        if (c == '\r' || c == '\n')
+        {
+            *ptr++ = 0;
+            if (c == '\r' && ptr != _receiveBufferWritePtr && *(char*)ptr == '\n')
+            {
+                ptr++;
+            }
+            if (ptr == _receiveBufferWritePtr)
+            {
+                _receiveBufferReadPtr = _receiveBuffer;
+                _receiveBufferWritePtr = _receiveBuffer;
+            }
+            else
+            {
+                _receiveBufferReadPtr = ptr;
+            }
+            return (char*)line;
+        }
+        ptr++;
+    }
+    return nullptr;
+}
+
+const byte* Processor::readReceiveBuffer(size_t size)
+{
+    size_t remain = _receiveBufferWritePtr - _receiveBufferReadPtr;
+    if (remain < size)
+        return nullptr;
+    const byte* ptr = _receiveBufferReadPtr;
+    _receiveBufferReadPtr += size;
+
+    if (_receiveBufferReadPtr == _receiveBufferWritePtr)
+    {
+        _receiveBufferReadPtr = _receiveBuffer;
+        _receiveBufferWritePtr = _receiveBuffer;
+    }
+    else if (_receiveBufferReadPtr >= _receiveBuffer + RECEIVE_BUFFER_SIZE)
+    {
+        remain = _receiveBufferWritePtr - _receiveBufferReadPtr;
+        memcpy(_receiveBuffer, _receiveBufferReadPtr, remain);
+        _receiveBufferWritePtr = _receiveBuffer + remain;
+        _receiveBufferReadPtr = _receiveBuffer;
+    }
+    return ptr;
+}
+
+bool Processor::receiveBufferIsEmpty() const
+{
+    return _receiveBufferReadPtr == _receiveBufferWritePtr;
+}
+
+size_t Processor::receiveBufferAvailable() const
+{
+    return _receiveBufferWritePtr - _receiveBufferReadPtr;
+}
+
+void Processor::cancelProcess()
+{
+    _state = COMMAND_LISTEN;
+    if (_uploadFile)
+    {
+        _uploadFile.close();
+    }
+    _lastUploadTime = 0;
+    _receiveBufferWritePtr = _receiveBuffer;
+    _receiveBufferReadPtr = _receiveBuffer;
+    _receiveFileSize = 0;
+}
+
+void Processor::onTransportDataArrive(uint32_t now, Transport* transport, const byte* data, size_t size)
+{
+    _currentTransport = transport;
+    if (_state == FILE_UPLOAD)
+    {
+        _lastUploadTime = now;
+    }
+    writeReceiveBuffer(data, size);
+}
+
+void Processor::dataProcess(uint32_t now)
+{
+    while (!receiveBufferIsEmpty())
+    {
+        if (_state == COMMAND_LISTEN || _state == RESYNC)
+        {
+            const char* line = readLineReceiveBuffer();
+            if (line == nullptr)
+            {
+                break;
+            }
+            commandProcess(now, line);
         }
         else if (_state == FILE_UPLOAD)
         {
-            size_t readSize = uploadProcess(now, data, size);
-            size -= readSize;
+            uploadProcess(now);
+            break;
+        }
+    }
+}
+
+void Processor::timeProcess(uint32_t now)
+{
+    if (_wifiStatus == WIFI_CONNECTING)
+    {
+        if (now - _lastWifiConnectTime > 1000)
+        {
+            WiFi.disconnect();
+            WiFi.reconnect();
+            _lastWifiConnectTime = now;
+        }
+    }
+    if (_wifiNotifyPending)
+    {
+        if(_state == COMMAND_LISTEN && _currentTransport != nullptr && _serialDisconnectTime == 0)
+        {
+            if (_wifiStatus == WIFI_CONNECTED)
+            {
+                sendNotify(CD_WIFI_CONNECTED);
+                _wifiNotifyPending = false;
+            }
+            else if (_wifiStatus == WIFI_DISCONNECTED)
+            {
+                switch (_wifiDisconnectReason)
+                {
+                case WIFI_REASON_AUTH_EXPIRE:
+                case WIFI_REASON_ASSOC_EXPIRE:
+                case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+                    sendNotify(CD_WIFI_AUTH_FAIL);
+                    break;
+                case WIFI_REASON_NO_AP_FOUND:
+                    sendNotify(CD_WIFI_SSID_NOT_FOUND);
+                    break;
+                default:
+                    sendNotify(CD_WIFI_DISCONNECTED);
+                }
+                _wifiNotifyPending = false;
+            }
         }
     }
 }
@@ -765,14 +1017,34 @@ void Processor::process(uint32_t now)
         setCpuFrequencyMhz(160);
         _cpuClockHigh = false;
     }
+    if (_state == FILE_UPLOAD)
+    {
+        if (_lastUploadTime != 0 && now - _lastUploadTime > DATA_CHUNK_TIMEOUT)
+        {
+            cancelProcess();
+            sendNotify(CD_TIMEOUT);
+            return;
+        }
+    }
+    if (!receiveBufferIsEmpty())
+    {
+        dataProcess(now);
+    }
+    else
+    {
+        timeProcess(now);
+    }
 
     LedSequencer::update(now);
     if (_serialDisconnectTime != 0)
     {
-        if (now - _serialDisconnectTime > 1000)
+        if (_currentTransport != nullptr && _currentTransport->getType() == SERIAL_TRANSPORT)
         {
-            //LedSequencer::clear();
-            _serialDisconnectTime = 0;
+            if (now - _serialDisconnectTime > 1000)
+            {
+                _serialDisconnectTime = 0;
+                onTransportDisconnect(now, _currentTransport);
+            }
         }
     }
 }
